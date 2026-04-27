@@ -1,0 +1,6 @@
+streamlit 
+pdfplumber 
+pandas 
+PyPDF2 
+msoffcrypto-tool 
+openpyxl
