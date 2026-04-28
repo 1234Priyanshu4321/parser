@@ -27,27 +27,50 @@ def extract_pdf_tables(path, password=None):
             for page_num, page in enumerate(pdf.pages):
                 tables = page.extract_tables()
 
-                for table in tables:
-                    if table and len(table) > 1:
-                        df = pd.DataFrame(table[1:], columns=table[0])
-                        df["Page"] = page_num + 1
+                if not tables:
+                    continue
+                for t_idx, table in enumerate(tables):
+                    try:
+                        # ✅ Convert everything to string (avoids pandas issues)
+                        table = [
+                            [str(cell) if cell is not None else "" for cell in row]
+                            for row in table
+                        ]
+                        df = pd.DataFrame(table)
+                        # Add debug info
+                        df["__page__"] = page_num + 1
+                        df["__table__"] = t_idx + 1
                         all_tables.append(df)
 
+                    except Exception as e:
+                        print(f"Table error on page {page_num+1}: {e}")
+                        continue
             # 🔁 Fallback: if no tables found → extract raw text
             if not all_tables:
                 text_data = []
                 for page_num, page in enumerate(pdf.pages):
                     text = page.extract_text()
                     if text:
-                        text_data.append({"Page": page_num + 1, "Raw_Text": text})
+                        text_data.append({
+                            "Page": page_num + 1,
+                            "Raw_Text": text
+                        })
 
                 if text_data:
                     return pd.DataFrame(text_data)
 
-    except Exception:
+    except Exception as e:
+        print("PDF read error:", e)
+        return None
+    if not all_tables:
         return None
 
-    return pd.concat(all_tables, ignore_index=True) if all_tables else None
+    # ✅ Safe concat (won’t crash)
+    try:
+        return pd.concat(all_tables, ignore_index=True, sort=False)
+    except Exception as e:
+        print("Concat error:", e)
+        return all_tables 
 
 
 # ---------------- EXCEL HELPERS ---------------- #
@@ -135,17 +158,24 @@ if uploaded_file:
     if df is not None:
         st.success("✅ Data extracted")
 
-        # Show preview
-        st.dataframe(df, use_container_width=True)
+        # ✅ Handle both DataFrame and list of tables
+        if isinstance(df, list):
+            st.warning("⚠️ Showing tables separately (concat failed)")
 
-        # Download CSV
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Download CSV",
-            data=csv,
-            file_name="output.csv",
-            mime="text/csv"
-        )
+            for i, table in enumerate(df):
+                st.write(f"### Table {i+1}")
+                st.dataframe(table, use_container_width=True)
+        else:
+            st.dataframe(df, use_container_width=True)
+
+            # Download CSV
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇️ Download CSV",
+                data=csv,
+                file_name="output.csv",
+                mime="text/csv"
+            )
     else:
         st.error("❌ Could not extract data")
 
