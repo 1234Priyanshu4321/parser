@@ -1,6 +1,7 @@
-streamlit 
-pdfplumber 
+streamlit
+pdfplumber
 pandas 
-PyPDF2 
+pypdf
+pycryptodome
 msoffcrypto-tool 
 openpyxl
