@@ -1,50 +1,51 @@
 import streamlit as st
 import pdfplumber
 import pandas as pd
-from PyPDF2 import PdfReader, PdfWriter
+from pypdf import PdfReader
 import tempfile
 import os
 import msoffcrypto
 
-os.environ["STREAMLIT_ARROW_ENABLED"]="0"
-
 st.set_page_config(page_title="Statement Extractor", layout="wide")
-st.title(":page_facing_up: Bank Statement Extractor (PDF + Excel)")
+st.title("📄 Bank Statement Extractor (PDF + Excel)")
 
 # ---------------- PDF HELPERS ---------------- #
 
 def is_pdf_encrypted(path):
-    reader = PdfReader(path)
-    return reader.is_encrypted
+    try:
+        reader = PdfReader(path)
+        return reader.is_encrypted
+    except:
+        return False
 
-def decrypt_pdf(input_path, password):
-    reader = PdfReader(input_path)
+
+def extract_pdf_tables(path, password=None):
+    all_tables = []
 
     try:
-        if reader.is_encrypted:
-            reader.decrypt(password)
-    except:
+        with pdfplumber.open(path, password=password) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                tables = page.extract_tables()
+
+                for table in tables:
+                    if table and len(table) > 1:
+                        df = pd.DataFrame(table[1:], columns=table[0])
+                        df["Page"] = page_num + 1
+                        all_tables.append(df)
+
+            # 🔁 Fallback: if no tables found → extract raw text
+            if not all_tables:
+                text_data = []
+                for page_num, page in enumerate(pdf.pages):
+                    text = page.extract_text()
+                    if text:
+                        text_data.append({"Page": page_num + 1, "Raw_Text": text})
+
+                if text_data:
+                    return pd.DataFrame(text_data)
+
+    except Exception:
         return None
-
-    writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
-
-    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    with open(temp_output.name, "wb") as f:
-        writer.write(f)
-
-    return temp_output.name
-
-def extract_pdf_tables(path):
-    all_tables = []
-    with pdfplumber.open(path) as pdf:
-        for page_num, page in enumerate(pdf.pages):
-            tables = page.extract_tables()
-            for table in tables:
-                df = pd.DataFrame(table)
-                df["Page"] = page_num + 1
-                all_tables.append(df)
 
     return pd.concat(all_tables, ignore_index=True) if all_tables else None
 
@@ -56,6 +57,7 @@ def try_read_excel(path):
         return pd.read_excel(path)
     except:
         return None
+
 
 def decrypt_excel(input_path, password):
     try:
@@ -78,68 +80,74 @@ def decrypt_excel(input_path, password):
 uploaded_file = st.file_uploader("Upload PDF or Excel", type=["pdf", "xlsx"])
 
 if uploaded_file:
-    suffix = os.path.splitext(uploaded_file.name)[1]
+    suffix = os.path.splitext(uploaded_file.name)[1].lower()
 
     # Save temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
         temp_file.write(uploaded_file.read())
         temp_path = temp_file.name
 
-    final_path = temp_path
+    df = None
 
     # ----------- PDF FLOW ----------- #
     if suffix == ".pdf":
         encrypted = is_pdf_encrypted(temp_path)
 
         if encrypted:
-            st.warning(":closed_lock_with_key: PDF is password-protected")
+            st.warning("🔐 PDF is password-protected")
             password = st.text_input("Enter PDF Password", type="password")
 
-            if password:
-                decrypted = decrypt_pdf(temp_path, password)
-                if decrypted:
-                    final_path = decrypted
-                    st.success(":white_check_mark: PDF decrypted")
-                else:
-                    st.error(":x: Wrong password")
-                    st.stop()
-            else:
+            if not password:
                 st.stop()
+        else:
+            password = None
 
-        df = extract_pdf_tables(final_path)
+        df = extract_pdf_tables(temp_path, password=password)
+
+        if df is None:
+            st.error("❌ Failed to read PDF (wrong password or unsupported format)")
+            os.remove(temp_path)
+            st.stop()
 
     # ----------- EXCEL FLOW ----------- #
     elif suffix == ".xlsx":
         df = try_read_excel(temp_path)
 
         if df is None:
-            st.warning(":closed_lock_with_key: Excel might be password-protected")
+            st.warning("🔐 Excel might be password-protected")
             password = st.text_input("Enter Excel Password", type="password")
 
             if password:
                 decrypted = decrypt_excel(temp_path, password)
                 if decrypted:
                     df = pd.read_excel(decrypted)
-                    st.success(":white_check_mark: Excel decrypted")
+                    st.success("✅ Excel decrypted")
+                    os.remove(decrypted)
                 else:
-                    st.error(":x: Wrong password")
+                    st.error("❌ Wrong password")
+                    os.remove(temp_path)
                     st.stop()
             else:
+                os.remove(temp_path)
                 st.stop()
 
     # ----------- OUTPUT ----------- #
     if df is not None:
-        st.success(":white_check_mark: Data extracted")
+        st.success("✅ Data extracted")
+
+        # Show preview
         st.dataframe(df, use_container_width=True)
 
+        # Download CSV
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            ":arrow_down: Download CSV",
+            "⬇️ Download CSV",
             data=csv,
             file_name="output.csv",
             mime="text/csv"
         )
     else:
-        st.error(":x: Could not extract data")
+        st.error("❌ Could not extract data")
 
+    # Cleanup
     os.remove(temp_path)
